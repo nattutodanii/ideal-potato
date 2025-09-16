@@ -823,6 +823,219 @@ export async function validateAndCorrectQuestion(question: ExtractedQuestion): P
   return { isValid: false, reason: validation.reason };
 }
 
+// Enhanced validation and fixing for bulk operations
+export async function validateAndFixQuestion(question: ExtractedQuestion): Promise<{ 
+  isValid: boolean; 
+  correctedQuestion?: ExtractedQuestion; 
+  reason?: string 
+}> {
+  // First, perform basic validation
+  const basicValidation = validateQuestionAnswer(question);
+  
+  // Check if question statement and options make sense together
+  const contentValidation = await validateQuestionContent(question);
+  
+  if (basicValidation.isValid && contentValidation.isValid) {
+    return { isValid: true, correctedQuestion: question };
+  }
+  
+  // Collect all issues
+  const issues = [];
+  if (!basicValidation.isValid) issues.push(basicValidation.reason);
+  if (!contentValidation.isValid) issues.push(contentValidation.reason);
+  
+  // Try to fix the question
+  try {
+    const fixedQuestion = await fixQuestionIssues(question, issues);
+    const fixedValidation = validateQuestionAnswer(fixedQuestion);
+    const fixedContentValidation = await validateQuestionContent(fixedQuestion);
+    
+    if (fixedValidation.isValid && fixedContentValidation.isValid) {
+      return { 
+        isValid: true, 
+        correctedQuestion: fixedQuestion,
+        reason: `Fixed issues: ${issues.join(', ')}`
+      };
+    } else {
+      return { 
+        isValid: false, 
+        reason: `Could not fix issues: ${issues.join(', ')}`
+      };
+    }
+  } catch (error) {
+    return { 
+      isValid: false, 
+      reason: `Fix attempt failed: ${error.message}. Original issues: ${issues.join(', ')}`
+    };
+  }
+}
+
+// Validate question content using AI
+async function validateQuestionContent(question: ExtractedQuestion): Promise<{ 
+  isValid: boolean; 
+  reason?: string 
+}> {
+  const maxRetries = API_KEYS.length;
+  let retryCount = 0;
+  
+  while (retryCount < maxRetries) {
+    try {
+      const apiKey = getNextApiKey();
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ 
+        model: 'gemini-1.5-flash',
+        generationConfig: {
+          temperature: 0.1,
+          topK: 1,
+          topP: 0.8,
+        }
+      });
+
+      const prompt = `
+You are an expert question validator. Analyze this ${question.question_type} question for correctness and consistency.
+
+QUESTION: ${question.question_statement}
+${question.options ? `OPTIONS: ${question.options.join(', ')}` : ''}
+ANSWER: ${question.answer}
+SOLUTION: ${question.solution || 'No solution provided'}
+
+VALIDATION CHECKS:
+1. Does the question statement make sense and is it complete?
+2. For MCQ/MSQ: Do the options relate to the question? Are they plausible?
+3. Does the provided answer actually match one of the options (for MCQ/MSQ)?
+4. Is the answer mathematically/logically correct for the question?
+5. Does the solution (if provided) lead to the correct answer?
+6. Are there any obvious errors or inconsistencies?
+
+RESPONSE FORMAT (JSON only):
+{
+  "isValid": true/false,
+  "issues": ["List of specific issues found"],
+  "correctAnswer": "What the correct answer should be (if different)",
+  "explanation": "Brief explanation of the validation result"
+}
+
+CRITICAL: Return ONLY valid JSON. Be thorough but concise.
+`;
+
+      const result = await model.generateContent([prompt]);
+      const response = await result.response;
+      const text = response.text();
+      
+      const jsonContent = extractJsonFromText(text);
+      if (!jsonContent) {
+        return { isValid: false, reason: 'Could not validate question content' };
+      }
+
+      const validation = JSON.parse(jsonContent);
+      
+      return {
+        isValid: validation.isValid,
+        reason: validation.issues?.join(', ') || validation.explanation
+      };
+
+    } catch (error: any) {
+      retryCount++;
+      if (error.message?.includes('429') || error.message?.includes('quota')) {
+        if (retryCount < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
+        }
+      }
+      throw error;
+    }
+  }
+  
+  throw new Error('Failed to validate question content after trying all API keys');
+}
+
+// Fix question issues using AI
+async function fixQuestionIssues(question: ExtractedQuestion, issues: string[]): Promise<ExtractedQuestion> {
+  const maxRetries = API_KEYS.length;
+  let retryCount = 0;
+  
+  while (retryCount < maxRetries) {
+    try {
+      const apiKey = getNextApiKey();
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const model = genAI.getGenerativeModel({ 
+        model: 'gemini-1.5-flash',
+        generationConfig: {
+          temperature: 0.3,
+          topK: 20,
+          topP: 0.8,
+        }
+      });
+
+      const prompt = `
+You are an expert question corrector. Fix the following ${question.question_type} question based on the identified issues.
+
+ORIGINAL QUESTION: ${question.question_statement}
+${question.options ? `ORIGINAL OPTIONS: ${question.options.join(', ')}` : ''}
+ORIGINAL ANSWER: ${question.answer}
+ORIGINAL SOLUTION: ${question.solution || 'No solution provided'}
+
+IDENTIFIED ISSUES: ${issues.join(', ')}
+
+FIXING INSTRUCTIONS:
+1. Keep the question statement as close to original as possible
+2. For MCQ: Ensure exactly ONE option is correct and matches the answer
+3. For MSQ: Ensure the correct combination of options matches the answer
+4. Fix mathematical errors in options or answer
+5. Ensure options are plausible but only correct ones are actually right
+6. Update solution to match the corrected answer
+7. Maintain the same difficulty level and educational value
+
+RESPONSE FORMAT (JSON only):
+{
+  "question_statement": "Corrected question statement",
+  "question_type": "${question.question_type}",
+  "options": ${question.options ? '["Corrected Option A", "Corrected Option B", "Corrected Option C", "Corrected Option D"]' : 'null'},
+  "answer": "Corrected answer",
+  "solution": "Corrected detailed solution"
+}
+
+CRITICAL: 
+- Return ONLY valid JSON
+- Use double backslashes (\\\\) for LaTeX commands
+- Ensure the answer exactly matches the options for MCQ/MSQ
+- Keep the same question type and educational intent
+`;
+
+      const result = await model.generateContent([prompt]);
+      const response = await result.response;
+      const text = response.text();
+      
+      const jsonContent = extractJsonFromText(text);
+      if (!jsonContent) {
+        throw new Error('No valid JSON response for question fixing');
+      }
+
+      const fixedQuestion = JSON.parse(jsonContent);
+      
+      return {
+        ...question,
+        question_statement: fixedQuestion.question_statement,
+        options: fixedQuestion.options,
+        answer: fixedQuestion.answer,
+        solution: fixedQuestion.solution
+      };
+
+    } catch (error: any) {
+      retryCount++;
+      if (error.message?.includes('429') || error.message?.includes('quota')) {
+        if (retryCount < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          continue;
+        }
+      }
+      throw error;
+    }
+  }
+  
+  throw new Error('Failed to fix question issues after trying all API keys');
+}
+
 // Correct question options using AI
 async function correctQuestionOptions(question: ExtractedQuestion): Promise<ExtractedQuestion> {
   const maxRetries = API_KEYS.length;
