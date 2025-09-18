@@ -3,6 +3,8 @@ import { CheckCircle, AlertTriangle, RefreshCw, Database, Zap, Settings, Play, P
 import { supabase } from '../lib/supabase';
 import { validateAndFixQuestion, ExtractedQuestion } from '../lib/gemini';
 import { QuestionPreview } from './QuestionPreview';
+import { BlockMath, InlineMath } from 'react-katex';
+import 'katex/dist/katex.min.css';
 import toast, { Toaster } from 'react-hot-toast';
 
 interface Exam {
@@ -32,6 +34,7 @@ interface ValidationResult {
   id: string;
   isValid: boolean;
   issues: string[];
+  originalQuestion?: QuestionToCheck;
   correctedQuestion?: ExtractedQuestion;
   status: 'pending' | 'checking' | 'valid' | 'fixed' | 'failed';
 }
@@ -159,6 +162,38 @@ export function OptionsChecker() {
     }
   };
 
+  const renderMathContent = (content: string) => {
+    if (!content) return null;
+    
+    const parts = content.split(/(\$\$[\s\S]*?\$\$|\$[^$\n]*?\$)/);
+    
+    return parts.map((part, i) => {
+      if (part.startsWith('$$') && part.endsWith('$$')) {
+        const math = part.slice(2, -2);
+        try {
+          return (
+            <div key={i} className="my-2">
+              <BlockMath math={math} />
+            </div>
+          );
+        } catch (error) {
+          console.error('LaTeX rendering error (display):', error);
+          return <div key={i} className="my-2 p-2 bg-red-50 border border-red-200 rounded text-red-700">LaTeX Error: {math}</div>;
+        }
+      } else if (part.startsWith('$') && part.endsWith('$')) {
+        const math = part.slice(1, -1);
+        try {
+          return <InlineMath key={i} math={math} />;
+        } catch (error) {
+          console.error('LaTeX rendering error (inline):', error);
+          return <span key={i} className="px-1 bg-red-50 border border-red-200 rounded text-red-700">{part}</span>;
+        }
+      } else {
+        return <span key={i} className="whitespace-pre-wrap">{part}</span>;
+      }
+    });
+  };
+
   const toggleQuestionSelection = (questionId: string) => {
     setSelectedQuestions(prev => {
       const newSet = new Set(prev);
@@ -203,6 +238,7 @@ export function OptionsChecker() {
       id: q.id,
       isValid: false,
       issues: [],
+      originalQuestion: q,
       status: 'pending'
     }));
     setValidationResults(initialResults);
@@ -403,7 +439,7 @@ export function OptionsChecker() {
             Options Checker
           </h1>
           <p className="text-xl text-gray-600 max-w-3xl mx-auto">
-            Validate and fix questions in bulk. Check if answers match options, verify solutions, and automatically correct issues.
+            Validate and fix questions in bulk. Check if answers match options, verify solutions, and automatically correct issues with equal probability distribution.
           </p>
           
           {/* Features */}
@@ -418,7 +454,7 @@ export function OptionsChecker() {
             </div>
             <div className="flex items-center gap-2">
               <Database className="w-5 h-5 text-green-500" />
-              <span>Bulk Processing</span>
+              <span>Equal Probability</span>
             </div>
           </div>
         </div>
@@ -515,14 +551,14 @@ export function OptionsChecker() {
               </div>
             </div>
 
-            <div className="max-h-96 overflow-y-auto space-y-3">
+            <div className="max-h-96 overflow-y-auto space-y-4">
               {questionsToCheck.map((question) => {
                 const result = validationResults.find(r => r.id === question.id);
                 
                 return (
                   <div
                     key={question.id}
-                    className={`border rounded-lg p-4 transition-all ${
+                    className={`border rounded-lg p-6 transition-all ${
                       selectedQuestions.has(question.id) 
                         ? 'border-purple-200 bg-purple-50' 
                         : 'border-gray-200 hover:border-gray-300'
@@ -537,7 +573,7 @@ export function OptionsChecker() {
                       />
                       
                       <div className="flex-1">
-                        <div className="flex items-center gap-3 mb-2">
+                        <div className="flex items-center gap-3 mb-3">
                           <span className={`px-2 py-1 rounded-full text-xs font-medium ${
                             question.question_type === 'MCQ' ? 'bg-blue-100 text-blue-800' :
                             question.question_type === 'MSQ' ? 'bg-green-100 text-green-800' :
@@ -559,19 +595,81 @@ export function OptionsChecker() {
                           )}
                         </div>
                         
-                        <p className="text-sm text-gray-700 mb-2 line-clamp-2">
-                          {question.question_statement.substring(0, 200)}...
-                        </p>
+                        {/* Question Statement with KaTeX */}
+                        <div className="mb-4">
+                          <h4 className="text-sm font-semibold text-gray-800 mb-2">Question:</h4>
+                          <div className="bg-gray-50 p-3 rounded-lg border text-gray-700 text-sm">
+                            {renderMathContent(question.question_statement)}
+                          </div>
+                        </div>
                         
-                        {question.options && (
-                          <div className="text-xs text-gray-500 mb-2">
-                            Options: {question.options.length} | Answer: {question.answer || 'None'}
+                        {/* Original Options */}
+                        {question.options && question.options.length > 0 && (
+                          <div className="mb-4">
+                            <h4 className="text-sm font-semibold text-gray-800 mb-2">Original Options:</h4>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                              {question.options.map((option, optionIndex) => (
+                                <div
+                                  key={optionIndex}
+                                  className={`p-2 rounded border text-xs ${
+                                    question.answer === String.fromCharCode(65 + optionIndex) ||
+                                    question.answer?.includes(String.fromCharCode(65 + optionIndex))
+                                      ? 'bg-green-50 border-green-200 text-green-800'
+                                      : 'bg-white border-gray-200 text-gray-700'
+                                  }`}
+                                >
+                                  <div className="flex items-start gap-2">
+                                    <span className="font-semibold text-purple-600 flex-shrink-0">
+                                      {String.fromCharCode(65 + optionIndex)}:
+                                    </span>
+                                    <div className="flex-1">
+                                      {renderMathContent(option)}
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 text-xs text-gray-600">
+                              <strong>Answer:</strong> {question.answer || 'None'}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Corrected Options (if fixed) */}
+                        {result && result.correctedQuestion && result.correctedQuestion.options && (
+                          <div className="mb-4">
+                            <h4 className="text-sm font-semibold text-green-800 mb-2">✅ Corrected Options:</h4>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                              {result.correctedQuestion.options.map((option, optionIndex) => (
+                                <div
+                                  key={optionIndex}
+                                  className={`p-2 rounded border text-xs ${
+                                    result.correctedQuestion?.answer === String.fromCharCode(65 + optionIndex) ||
+                                    result.correctedQuestion?.answer?.includes(String.fromCharCode(65 + optionIndex))
+                                      ? 'bg-green-100 border-green-300 text-green-900'
+                                      : 'bg-blue-50 border-blue-200 text-blue-800'
+                                  }`}
+                                >
+                                  <div className="flex items-start gap-2">
+                                    <span className="font-semibold text-purple-600 flex-shrink-0">
+                                      {String.fromCharCode(65 + optionIndex)}:
+                                    </span>
+                                    <div className="flex-1">
+                                      {renderMathContent(option)}
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="mt-2 text-xs text-green-700">
+                              <strong>Corrected Answer:</strong> {result.correctedQuestion.answer || 'None'}
+                            </div>
                           </div>
                         )}
                         
                         {result && result.issues.length > 0 && (
-                          <div className="mt-2 p-2 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-800">
-                            Issues: {result.issues.join(', ')}
+                          <div className="mt-3 p-3 bg-yellow-50 border border-yellow-200 rounded text-xs text-yellow-800">
+                            <strong>Issues Found:</strong> {result.issues.join(', ')}
                           </div>
                         )}
                       </div>

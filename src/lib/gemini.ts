@@ -846,7 +846,7 @@ export async function validateAndFixQuestion(question: ExtractedQuestion): Promi
   
   // Try to fix the question
   try {
-    const fixedQuestion = await fixQuestionIssues(question, issues);
+    const fixedQuestion = await fixQuestionIssuesWithEqualProbability(question, issues);
     const fixedValidation = validateQuestionAnswer(fixedQuestion);
     const fixedContentValidation = await validateQuestionContent(fixedQuestion);
     
@@ -950,7 +950,7 @@ CRITICAL: Return ONLY valid JSON. Be thorough but concise.
 }
 
 // Fix question issues using AI
-async function fixQuestionIssues(question: ExtractedQuestion, issues: string[]): Promise<ExtractedQuestion> {
+async function fixQuestionIssuesWithEqualProbability(question: ExtractedQuestion, issues: string[]): Promise<ExtractedQuestion> {
   const maxRetries = API_KEYS.length;
   let retryCount = 0;
   
@@ -967,8 +967,12 @@ async function fixQuestionIssues(question: ExtractedQuestion, issues: string[]):
         }
       });
 
+      // Generate a random correct answer position for equal probability
+      const correctAnswerPosition = Math.floor(Math.random() * 4); // 0-3 for A-D
+      const correctAnswerLetter = String.fromCharCode(65 + correctAnswerPosition); // A, B, C, or D
+
       const prompt = `
-You are an expert question corrector. Fix the following ${question.question_type} question based on the identified issues.
+You are an expert question corrector for competitive exams like JEE, NEET, GATE. Fix the following ${question.question_type} question based on the identified issues.
 
 ORIGINAL QUESTION: ${question.question_statement}
 ${question.options ? `ORIGINAL OPTIONS: ${question.options.join(', ')}` : ''}
@@ -977,29 +981,47 @@ ORIGINAL SOLUTION: ${question.solution || 'No solution provided'}
 
 IDENTIFIED ISSUES: ${issues.join(', ')}
 
+CRITICAL REQUIREMENTS FOR EQUAL PROBABILITY:
+${question.question_type === 'MCQ' ? `- The correct answer MUST be option ${correctAnswerLetter} (position ${correctAnswerPosition + 1})` : ''}
+${question.question_type === 'MSQ' ? `- Ensure 1-3 options can be correct, with varied combinations across questions` : ''}
+- This ensures 25% probability for each option in MCQ across all questions
+- Avoid patterns that make answers predictable
+
 FIXING INSTRUCTIONS:
-1. Keep the question statement as close to original as possible
-2. For MCQ: Ensure exactly ONE option is correct and matches the answer
-3. For MSQ: Ensure the correct combination of options matches the answer
-4. Fix mathematical errors in options or answer
-5. Ensure options are plausible but only correct ones are actually right
-6. Update solution to match the corrected answer
-7. Maintain the same difficulty level and educational value
+1. Keep the question statement as close to original as possible unless it has errors
+2. Create 4 high-quality, plausible options that test deep understanding
+3. Make ALL options look reasonable - avoid obviously wrong answers
+4. For MCQ: Make the correct answer option ${correctAnswerLetter} by adjusting the options accordingly
+5. For MSQ: Create a balanced set where 1-3 options can be correct
+6. Ensure distractors (wrong options) are based on common mistakes or misconceptions
+7. All options should be at similar difficulty level - no "gimme" answers
+8. Update solution to clearly explain why the correct option(s) are right and others are wrong
+9. Use proper mathematical notation and LaTeX formatting
+10. Maintain competitive exam standards (JEE/NEET/GATE level difficulty)
+
+OPTION QUALITY STANDARDS:
+- Each option should represent a different approach or common mistake
+- Numerical values should be close enough to require actual calculation
+- Avoid options like "None of these" or obviously incorrect values
+- For physics/chemistry: Use realistic values and units
+- For mathematics: Ensure all options are mathematically plausible
 
 RESPONSE FORMAT (JSON only):
 {
   "question_statement": "Corrected question statement",
   "question_type": "${question.question_type}",
   "options": ${question.options ? '["Corrected Option A", "Corrected Option B", "Corrected Option C", "Corrected Option D"]' : 'null'},
-  "answer": "Corrected answer",
+  "answer": "${question.question_type === 'MCQ' ? correctAnswerLetter : 'Corrected answer'}",
   "solution": "Corrected detailed solution"
 }
 
 CRITICAL: 
 - Return ONLY valid JSON
 - Use double backslashes (\\\\) for LaTeX commands
-- Ensure the answer exactly matches the options for MCQ/MSQ
+- For MCQ: The answer MUST be "${correctAnswerLetter}" and option ${correctAnswerLetter} must be the correct one
+- For MSQ: Ensure the answer format matches the correct option combination
 - Keep the same question type and educational intent
+- Make all 4 options competitive exam quality - no easy eliminations
 `;
 
       const result = await model.generateContent([prompt]);
@@ -1033,7 +1055,7 @@ CRITICAL:
     }
   }
   
-  throw new Error('Failed to fix question issues after trying all API keys');
+  throw new Error('Failed to fix question issues with equal probability after trying all API keys');
 }
 
 // Correct question options using AI
